@@ -135,7 +135,7 @@ func Create(db *gorm.DB) {
 
 func MergeCreate(db *gorm.DB, onConflict clause.OnConflict, values clause.Values) {
 	db.Statement.WriteString("MERGE INTO ")
-	db.Statement.WriteString(db.Statement.Schema.Table)
+	db.Statement.WriteQuoted(db.Statement.Schema.Table)
 	db.Statement.WriteString(" USING (VALUES")
 	for idx, value := range values.Values {
 		if idx > 0 {
