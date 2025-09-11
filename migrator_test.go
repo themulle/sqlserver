@@ -1,6 +1,7 @@
 package sqlserver_test
 
 import (
+	"encoding/json"
 	"os"
 	"reflect"
 	"testing"
@@ -187,4 +188,118 @@ func testGetMigrateColumns(db *gorm.DB, dst interface{}) (columnsWithDefault, co
 		}
 	}
 	return
+}
+
+type TestTableFieldComment struct {
+	ID   string `gorm:"column:id;primaryKey;comment:"` // field comment is an empty string
+	Name string `gorm:"column:name;comment:姓名"`
+	Age  uint   `gorm:"column:age;comment:年龄"`
+}
+
+func (*TestTableFieldComment) TableName() string { return "test_table_field_comment" }
+
+type TestTableFieldCommentUpdate struct {
+	ID       string     `gorm:"column:id;primaryKey;comment:ID"`
+	Name     string     `gorm:"column:name;comment:姓名"`
+	Age      uint       `gorm:"column:age;comment:周岁"`
+	Birthday *time.Time `gorm:"column:birthday;comment:生日"`
+	Quote    string     `gorm:"column:quote;comment:注释中包含'单引号'和特殊符号❤️"`
+}
+
+func (*TestTableFieldCommentUpdate) TableName() string { return "test_table_field_comment" }
+
+func TestMigrator_MigrateColumnComment(t *testing.T) {
+	db, err := gorm.Open(sqlserver.Open(sqlserverDSN))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dm := db.Debug().Migrator()
+
+	tableModel := new(TestTableFieldComment)
+	defer func() {
+		if err = dm.DropTable(tableModel); err != nil {
+			t.Errorf("couldn't drop table %q, got error: %v", tableModel.TableName(), err)
+		}
+	}()
+
+	if err = dm.AutoMigrate(tableModel); err != nil {
+		t.Fatal(err)
+	}
+	tableModelUpdate := new(TestTableFieldCommentUpdate)
+	if err = dm.AutoMigrate(tableModelUpdate); err != nil {
+		t.Error(err)
+	}
+
+	if m, ok := dm.(sqlserver.Migrator); ok {
+		stmt := db.Model(tableModelUpdate).Find(nil).Statement
+		if stmt == nil || stmt.Schema == nil {
+			t.Fatal("expected Statement.Schema, got nil")
+		}
+
+		wantComments := []string{"ID", "姓名", "周岁", "生日", "注释中包含'单引号'和特殊符号❤️"}
+		gotComments := make([]string, len(stmt.Schema.DBNames))
+
+		for i, fieldDBName := range stmt.Schema.DBNames {
+			comment := m.GetColumnComment(stmt, fieldDBName)
+			gotComments[i] = comment.String
+		}
+
+		if !reflect.DeepEqual(wantComments, gotComments) {
+			t.Fatalf("expected comments %#v, got %#v", wantComments, gotComments)
+		}
+		t.Logf("got comments: %#v", gotComments)
+	}
+}
+
+func TestMigrator_GetIndexes(t *testing.T) {
+	db, err := gorm.Open(sqlserver.Open(sqlserverDSN))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dm := db.Debug().Migrator()
+
+	type testTableIndex struct {
+		Test uint64 `gorm:"index"`
+	}
+	type testTableUnique struct {
+		ID string `gorm:"index:unique_id,class:UNIQUE,where:id IS NOT NULL"`
+	}
+	type testTablePrimaryKey struct {
+		ID string `gorm:"primaryKey"`
+	}
+
+	type args struct {
+		value interface{}
+	}
+	tests := []struct {
+		name    string
+		args    args
+		wantErr bool
+	}{
+		{name: "index", args: args{value: new(testTableIndex)}},
+		{name: "unique", args: args{value: new(testTableUnique)}},
+		{name: "primaryKey", args: args{value: new(testTablePrimaryKey)}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err = dm.AutoMigrate(tt.args.value); err != nil {
+				t.Error(err)
+			}
+			got, gotErr := dm.GetIndexes(tt.args.value)
+			if (gotErr != nil) != tt.wantErr {
+				t.Errorf("GetIndexes() error = %v, wantErr %v", gotErr, tt.wantErr)
+				return
+			}
+			for _, index := range got {
+				_, validUnique := index.Unique()
+				_, validPK := index.PrimaryKey()
+				indexBytes, _ := json.Marshal(index)
+				if index.Name() == "" && !validUnique && !validPK {
+					t.Errorf("GetIndexes() got = %s empty", indexBytes)
+				} else {
+					t.Logf("GetIndexes() got = %s", indexBytes)
+				}
+			}
+		})
+	}
 }
