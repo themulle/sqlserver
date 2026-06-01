@@ -48,6 +48,10 @@ func Create(db *gorm.DB) {
 			hasOutput = MergeCreate(db, onConflict, values)
 		} else {
 			setIdentityInsert := false
+			targetTable := db.Statement.Table
+			if db.Statement.Schema != nil {
+				targetTable = db.Statement.Schema.Table
+			}
 
 			if db.Statement.Schema != nil {
 				if field := db.Statement.Schema.PrioritizedPrimaryField; field != nil && field.AutoIncrement {
@@ -68,7 +72,7 @@ func Create(db *gorm.DB) {
 
 					if setIdentityInsert {
 						db.Statement.WriteString("SET IDENTITY_INSERT ")
-						db.Statement.WriteQuoted(db.Statement.Table)
+						db.Statement.WriteQuoted(targetTable)
 						db.Statement.WriteString(" ON;")
 					}
 				}
@@ -112,7 +116,7 @@ func Create(db *gorm.DB) {
 
 			if setIdentityInsert {
 				db.Statement.WriteString("SET IDENTITY_INSERT ")
-				db.Statement.WriteQuoted(db.Statement.Table)
+				db.Statement.WriteQuoted(targetTable)
 				db.Statement.WriteString(" OFF;")
 			}
 		}
@@ -142,8 +146,13 @@ func Create(db *gorm.DB) {
 }
 
 func MergeCreate(db *gorm.DB, onConflict clause.OnConflict, values clause.Values) bool {
+	targetTable := db.Statement.Table
+	if db.Statement.Schema != nil {
+		targetTable = db.Statement.Schema.Table
+	}
+
 	db.Statement.WriteString("MERGE INTO ")
-	db.Statement.WriteQuoted(db.Statement.Schema.Table)
+	db.Statement.WriteQuoted(targetTable)
 	db.Statement.WriteString(" USING (VALUES")
 	for idx, value := range values.Values {
 		if idx > 0 {
@@ -167,7 +176,7 @@ func MergeCreate(db *gorm.DB, onConflict clause.OnConflict, values clause.Values
 	var where clause.Where
 	for _, field := range db.Statement.Schema.PrimaryFields {
 		where.Exprs = append(where.Exprs, clause.Eq{
-			Column: clause.Column{Table: db.Statement.Table, Name: field.DBName},
+			Column: clause.Column{Table: targetTable, Name: field.DBName},
 			Value:  clause.Column{Table: "excluded", Name: field.DBName},
 		})
 	}
