@@ -142,7 +142,7 @@ func Create(db *gorm.DB) {
 }
 
 func MergeCreate(db *gorm.DB, onConflict clause.OnConflict, values clause.Values) bool {
-	if db.Statement.Schema == nil {
+	if db.Statement.Schema == nil || len(db.Statement.Schema.PrimaryFields) == 0 {
 		return false
 	}
 

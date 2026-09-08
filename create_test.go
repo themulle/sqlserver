@@ -112,6 +112,20 @@ func (identityInsertSchemaTableModel) TableName() string {
 	return "testschema.identity_models"
 }
 
+type compositeKeySchemaModel struct {
+	TenantID uint   `gorm:"primaryKey"`
+	ID       uint   `gorm:"primaryKey"`
+	Name     string `gorm:"column:name"`
+}
+
+func (compositeKeySchemaModel) TableName() string {
+	return "testschema.composite_models"
+}
+
+type noPrimaryKeyModel struct {
+	Name string `gorm:"column:name"`
+}
+
 func openDryRunDB(t *testing.T) *gorm.DB {
 	t.Helper()
 
@@ -152,6 +166,26 @@ func TestCreateSQL_MergeUsesSchemaQualifiedTable(t *testing.T) {
 	}
 }
 
+func TestCreateSQL_MergeWithCompositePrimaryKey(t *testing.T) {
+	db := openDryRunDB(t)
+
+	tx := db.Clauses(clause.OnConflict{
+		DoUpdates: clause.AssignmentColumns([]string{"name"}),
+	}).Create(&compositeKeySchemaModel{TenantID: 1, ID: 2, Name: "charlie"})
+	if tx.Error != nil {
+		t.Fatalf("create failed: %v", tx.Error)
+	}
+
+	sql := tx.Statement.SQL.String()
+	if !strings.Contains(sql, `MERGE INTO "testschema"."composite_models" AS "target"`) {
+		t.Fatalf("expected schema-qualified MERGE target with alias, got SQL: %s", sql)
+	}
+	expectedOn := `"target"."tenant_id" = "excluded"."tenant_id" AND "target"."id" = "excluded"."id"`
+	if !strings.Contains(sql, expectedOn) {
+		t.Fatalf("expected composite key ON clause %q, got SQL: %s", expectedOn, sql)
+	}
+}
+
 func TestCreateSQL_MergeWithTableOverride(t *testing.T) {
 	db := openDryRunDB(t)
 
@@ -185,6 +219,50 @@ func TestCreateSQL_MergeWithMap(t *testing.T) {
 	}).Create(map[string]interface{}{"name": "alice"})
 	if tx.Error != nil {
 		t.Fatalf("create failed: %v", tx.Error)
+	}
+
+	sql := tx.Statement.SQL.String()
+	if strings.Contains(sql, "MERGE INTO") {
+		t.Fatalf("expected map create without schema to fall back to INSERT, got: %s", sql)
+	}
+	if !strings.Contains(sql, `INSERT INTO "users"`) {
+		t.Fatalf("expected INSERT fallback, got: %s", sql)
+	}
+}
+
+func TestCreateSQL_NoPrimaryKeyFallsBackToInsert(t *testing.T) {
+	db := openDryRunDB(t)
+
+	tx := db.Model(&noPrimaryKeyModel{}).Clauses(clause.OnConflict{
+		DoUpdates: clause.AssignmentColumns([]string{"name"}),
+	}).Create(&noPrimaryKeyModel{Name: "alice"})
+	if tx.Error != nil {
+		t.Fatalf("create failed: %v", tx.Error)
+	}
+
+	sql := tx.Statement.SQL.String()
+	if strings.Contains(sql, "MERGE INTO") {
+		t.Fatalf("expected model without primary key to fall back to INSERT, got: %s", sql)
+	}
+}
+
+func TestMergeCreate_DirectCallGuard(t *testing.T) {
+	db := openDryRunDB(t)
+
+	// Direct call with nil schema
+	stmt := &gorm.Statement{DB: db}
+	dbNilSchema := db.Session(&gorm.Session{})
+	dbNilSchema.Statement = stmt
+	if sqlserver.MergeCreate(dbNilSchema, clause.OnConflict{}, clause.Values{}) {
+		t.Fatalf("expected MergeCreate to return false for nil schema")
+	}
+
+	// Direct call with empty primary fields
+	if err := db.Statement.Parse(&noPrimaryKeyModel{}); err != nil {
+		t.Fatalf("failed to parse model: %v", err)
+	}
+	if sqlserver.MergeCreate(db, clause.OnConflict{}, clause.Values{}) {
+		t.Fatalf("expected MergeCreate to return false for schema without primary keys")
 	}
 }
 
