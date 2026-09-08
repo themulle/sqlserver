@@ -28,7 +28,7 @@ func Create(db *gorm.DB) {
 		)
 
 		if hasConflict {
-			if len(db.Statement.Schema.PrimaryFields) > 0 {
+			if db.Statement.Schema != nil && len(db.Statement.Schema.PrimaryFields) > 0 {
 				columnsMap := map[string]bool{}
 				for _, column := range values.Columns {
 					columnsMap[column.Name] = true
@@ -142,8 +142,14 @@ func Create(db *gorm.DB) {
 }
 
 func MergeCreate(db *gorm.DB, onConflict clause.OnConflict, values clause.Values) bool {
+	if db.Statement.Schema == nil {
+		return false
+	}
+
 	db.Statement.WriteString("MERGE INTO ")
 	db.Statement.WriteQuoted(clause.Table{Name: clause.CurrentTable})
+	db.Statement.WriteString(" AS ")
+	db.Statement.WriteQuoted("target")
 	db.Statement.WriteString(" USING (VALUES")
 	for idx, value := range values.Values {
 		if idx > 0 {
@@ -164,15 +170,10 @@ func MergeCreate(db *gorm.DB, onConflict clause.OnConflict, values clause.Values
 	}
 	db.Statement.WriteString(") ON ")
 
-	targetTable := db.Statement.Table
-	if db.Statement.Schema != nil && db.Statement.Schema.Table != "" {
-		targetTable = db.Statement.Schema.Table
-	}
-
 	var where clause.Where
 	for _, field := range db.Statement.Schema.PrimaryFields {
 		where.Exprs = append(where.Exprs, clause.Eq{
-			Column: clause.Column{Table: targetTable, Name: field.DBName},
+			Column: clause.Column{Table: "target", Name: field.DBName},
 			Value:  clause.Column{Table: "excluded", Name: field.DBName},
 		})
 	}

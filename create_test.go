@@ -144,11 +144,47 @@ func TestCreateSQL_MergeUsesSchemaQualifiedTable(t *testing.T) {
 	}
 
 	sql := tx.Statement.SQL.String()
-	if !strings.Contains(sql, `MERGE INTO "testschema"."users"`) {
-		t.Fatalf("expected schema-qualified MERGE target, got SQL: %s", sql)
+	if !strings.Contains(sql, `MERGE INTO "testschema"."users" AS "target"`) {
+		t.Fatalf("expected schema-qualified MERGE target with alias, got SQL: %s", sql)
 	}
-	if !strings.Contains(sql, `"testschema"."users"."id"`) {
-		t.Fatalf("expected schema-qualified target column in ON clause, got SQL: %s", sql)
+	if !strings.Contains(sql, `"target"."id" = "excluded"."id"`) {
+		t.Fatalf("expected target alias column in ON clause, got SQL: %s", sql)
+	}
+}
+
+func TestCreateSQL_MergeWithTableOverride(t *testing.T) {
+	db := openDryRunDB(t)
+
+	tx := db.Table("archive.custom_users").Clauses(clause.OnConflict{
+		DoUpdates: clause.AssignmentColumns([]string{"name"}),
+	}).Create(&testSchemaUser{ID: 1, Name: "alice"})
+	if tx.Error != nil {
+		t.Fatalf("create failed: %v", tx.Error)
+	}
+
+	sql := tx.Statement.SQL.String()
+	if !strings.Contains(sql, `MERGE INTO "archive"."custom_users" AS "target"`) {
+		t.Fatalf("expected MERGE INTO \"archive\".\"custom_users\" AS \"target\", got: %s", sql)
+	}
+	if !strings.Contains(sql, `"target"."id" = "excluded"."id"`) {
+		t.Fatalf("expected ON \"target\".\"id\" = \"excluded\".\"id\", got: %s", sql)
+	}
+}
+
+func TestCreateSQL_MergeWithMap(t *testing.T) {
+	db := openDryRunDB(t)
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("panicked on map with OnConflict: %v", r)
+		}
+	}()
+
+	tx := db.Table("users").Clauses(clause.OnConflict{
+		DoUpdates: clause.AssignmentColumns([]string{"name"}),
+	}).Create(map[string]interface{}{"name": "alice"})
+	if tx.Error != nil {
+		t.Fatalf("create failed: %v", tx.Error)
 	}
 }
 
