@@ -141,6 +141,15 @@ func Create(db *gorm.DB) {
 	}
 }
 
+// MergeHoldLockKey enables the HOLDLOCK table hint on the MERGE statement used for upserts
+// (Save, OnConflict). Without it, concurrent upserts of the same new key may both take the
+// WHEN NOT MATCHED branch and one of them fails with a duplicate key error (2627).
+// HOLDLOCK serializes them on the key range. It is opt-in because it adds range locks to
+// every affected MERGE:
+//
+//	db.Set(sqlserver.MergeHoldLockKey, true).Save(&value)
+const MergeHoldLockKey = "sqlserver:merge_holdlock"
+
 func MergeCreate(db *gorm.DB, onConflict clause.OnConflict, values clause.Values) bool {
 	if db.Statement.Schema == nil || len(db.Statement.Schema.PrimaryFields) == 0 {
 		return false
@@ -148,6 +157,9 @@ func MergeCreate(db *gorm.DB, onConflict clause.OnConflict, values clause.Values
 
 	db.Statement.WriteString("MERGE INTO ")
 	db.Statement.WriteQuoted(clause.Table{Name: clause.CurrentTable})
+	if holdLock, ok := db.Get(MergeHoldLockKey); ok && holdLock == true {
+		db.Statement.WriteString(" WITH (HOLDLOCK)")
+	}
 	db.Statement.WriteString(" AS ")
 	db.Statement.WriteQuoted("target")
 	db.Statement.WriteString(" USING (VALUES")

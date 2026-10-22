@@ -1,6 +1,7 @@
 package sqlserver_test
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 
@@ -280,5 +281,76 @@ func TestCreateSQL_IdentityInsertUsesSchemaQualifiedTable(t *testing.T) {
 	}
 	if !strings.Contains(sql, `SET IDENTITY_INSERT "testschema"."identity_models" OFF;`) {
 		t.Fatalf("expected schema-qualified IDENTITY_INSERT OFF, got SQL: %s", sql)
+	}
+}
+
+type holdLockKeyValueModel struct {
+	Bucket string `gorm:"primaryKey"`
+	Key    string `gorm:"primaryKey"`
+	Value  string
+}
+
+func (holdLockKeyValueModel) TableName() string {
+	return "testschema.key_values"
+}
+
+func TestCreateSQL_MergeWithoutHoldLockByDefault(t *testing.T) {
+	db := openDryRunDB(t)
+
+	tx := db.Clauses(clause.OnConflict{UpdateAll: true}).Create(&holdLockKeyValueModel{Bucket: "b", Key: "k", Value: "v"})
+	if tx.Error != nil {
+		t.Fatalf("create failed: %v", tx.Error)
+	}
+
+	sql := tx.Statement.SQL.String()
+	if strings.Contains(sql, "HOLDLOCK") {
+		t.Fatalf("expected no HOLDLOCK hint without opt-in, got SQL: %s", sql)
+	}
+}
+
+func TestCreateSQL_MergeWithHoldLock(t *testing.T) {
+	db := openDryRunDB(t)
+
+	tx := db.Set(sqlserver.MergeHoldLockKey, true).
+		Clauses(clause.OnConflict{UpdateAll: true}).
+		Create(&holdLockKeyValueModel{Bucket: "b", Key: "k", Value: "v"})
+	if tx.Error != nil {
+		t.Fatalf("create failed: %v", tx.Error)
+	}
+
+	sql := tx.Statement.SQL.String()
+	if !strings.Contains(sql, `MERGE INTO "testschema"."key_values" WITH (HOLDLOCK) AS "target"`) {
+		t.Fatalf("expected HOLDLOCK hint between MERGE target and alias, got SQL: %s", sql)
+	}
+}
+
+// Save runs an UPDATE first and falls back to MERGE when no row was affected. The opt-in has
+// to survive that fallback, since Save is the usual way to upsert.
+func TestSave_MergeWithHoldLock(t *testing.T) {
+	sqlDB, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to create sqlmock: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = sqlDB.Close()
+	})
+
+	db, err := gorm.Open(sqlserver.New(sqlserver.Config{Conn: sqlDB}), &gorm.Config{
+		SkipDefaultTransaction: true,
+	})
+	if err != nil {
+		t.Fatalf("failed to open db: %v", err)
+	}
+
+	mock.ExpectExec(regexp.QuoteMeta(`UPDATE "testschema"."key_values"`)).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(regexp.QuoteMeta(`MERGE INTO "testschema"."key_values" WITH (HOLDLOCK) AS "target"`)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	if err := db.Set(sqlserver.MergeHoldLockKey, true).Save(&holdLockKeyValueModel{Bucket: "b", Key: "k", Value: "v"}).Error; err != nil {
+		t.Fatalf("save failed: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
 	}
 }
